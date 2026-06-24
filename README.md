@@ -8,6 +8,8 @@ Use this raw URL in Home Assistant Blueprint Import:
 
 `https://raw.githubusercontent.com/bleialf/night-cooling-advisor/main/night_cooling_advisor.yaml`
 
+[![Import this Blueprint into Home Assistant](https://my.home-assistant.io/badges/blueprint_import.svg)](https://my.home-assistant.io/redirect/blueprint_import/?blueprint_url=https://raw.githubusercontent.com/bleialf/night-cooling-advisor/main/night_cooling_advisor.yaml)
+
 You can also open the source file directly:
 
 `https://github.com/bleialf/night-cooling-advisor/blob/main/night_cooling_advisor.yaml`
@@ -17,13 +19,13 @@ You can also open the source file directly:
 | Input | Default |
 |---|---|
 | Evening notification time (`notify_time`) | `20:00:00` |
-| Notify service (`notify_service`) | `notify.ha_push_bewohner` |
-| Indoor average sensor (`indoor_avg_sensor`) | `sensor.raum_ist_durchschnitt` |
+| Notify service (`notify_service`) | required |
+| Indoor average sensor (`indoor_avg_sensor`) | required |
 | Room temperature sensors (`room_temp_sensors`) | `[]` |
-| Outdoor temperature current (`outdoor_sensor`) | `sensor.hoval_cangw_af1_aussenfuehler_1` |
-| Weather entity hourly forecast (`weather_entity`) | `weather.pirateweather` |
-| Outdoor dew point (`dewpoint_sensor`) | `sensor.pirateweather_dew_point` |
-| Tomorrow high temperature (`tomorrow_high_sensor`) | `sensor.pirateweather_daytime_high_temperature_1d` |
+| Outdoor temperature current (`outdoor_sensor`) | required |
+| Weather entity hourly forecast (`weather_entity`) | required |
+| Outdoor dew point (`dewpoint_sensor`) | required |
+| Tomorrow high temperature (`tomorrow_high_sensor`) | required |
 | Look-ahead window hours (`lookahead_hours`) | `4` |
 | Indoor threshold (`indoor_threshold`) | `23` |
 | Minimum benefit delta (`min_delta`) | `2` |
@@ -37,4 +39,4 @@ Requires Home Assistant 2024.x or newer because it uses `weather.get_forecasts`.
 
 ## Version
 
-Current release: 1.0.0
+Current release: 1.0.1
