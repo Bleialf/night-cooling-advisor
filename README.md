@@ -65,4 +65,4 @@ https://raw.githubusercontent.com/bleialf/night-cooling-advisor/main/night_cooli
 
 ## Version
 
-Current release: 1.1.0
+Current release: 1.1.1
