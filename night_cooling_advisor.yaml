@@ -1,0 +1,183 @@
+blueprint:
+  name: Night Cooling Advisor (Free Cooling)
+  source_url: https://github.com/bleialf/night-cooling-advisor/blob/main/night_cooling_advisor.yaml
+  description: >
+    Sends an evening notification when free night ventilation is worthwhile.
+    Uses the hourly forecast (will it cool down over the next hours?), the indoor
+    average, the outdoor dew point (don't ventilate humidity in) and tomorrow's
+    high (hot day -> pre-cool the slab). Names the warmest rooms.
+    Notification only, no actuators.
+  domain: automation
+  input:
+    notify_time:
+      name: Evening notification time
+      default: "20:00:00"
+      selector:
+        time: {}
+    notify_service:
+      name: Notify service
+      description: e.g. notify.ha_push_bewohner
+      default: notify.ha_push_bewohner
+      selector:
+        text: {}
+    indoor_avg_sensor:
+      name: Indoor average sensor
+      default: sensor.raum_ist_durchschnitt
+      selector:
+        entity:
+          domain: sensor
+          device_class: temperature
+    room_temp_sensors:
+      name: Room temperature sensors (for "warmest rooms")
+      description: List of room sensors; names are taken automatically from friendly_name.
+      default: []
+      selector:
+        entity:
+          domain: sensor
+          device_class: temperature
+          multiple: true
+    outdoor_sensor:
+      name: Outdoor temperature (current)
+      default: sensor.hoval_cangw_af1_aussenfuehler_1
+      selector:
+        entity:
+          domain: sensor
+          device_class: temperature
+    weather_entity:
+      name: Weather entity (hourly forecast)
+      default: weather.pirateweather
+      selector:
+        entity:
+          domain: weather
+    dewpoint_sensor:
+      name: Outdoor dew point
+      default: sensor.pirateweather_dew_point
+      selector:
+        entity:
+          domain: sensor
+          device_class: temperature
+    tomorrow_high_sensor:
+      name: Tomorrow's high temperature
+      default: sensor.pirateweather_daytime_high_temperature_1d
+      selector:
+        entity:
+          domain: sensor
+          device_class: temperature
+    lookahead_hours:
+      name: Look-ahead window (hours)
+      default: 4
+      selector:
+        number: { min: 1, max: 12, step: 1, unit_of_measurement: h, mode: slider }
+    indoor_threshold:
+      name: Indoor threshold (only notify if indoor warmer than)
+      default: 23
+      selector:
+        number: { min: 18, max: 28, step: 0.5, unit_of_measurement: "°C", mode: slider }
+    min_delta:
+      name: Minimum benefit (indoor minus forecast outdoor minimum)
+      default: 2
+      selector:
+        number: { min: 0.5, max: 8, step: 0.5, unit_of_measurement: K, mode: slider }
+    dewpoint_max:
+      name: Max outdoor dew point (avoid humidity)
+      default: 16
+      selector:
+        number: { min: 8, max: 20, step: 0.5, unit_of_measurement: "°C", mode: slider }
+    hotday_threshold:
+      name: Hot-day threshold (tomorrow's high)
+      default: 30
+      selector:
+        number: { min: 24, max: 38, step: 1, unit_of_measurement: "°C", mode: slider }
+    block_if_on:
+      name: (Optional) Block entities
+      description: If any of these is 'on'/'home', no notification (e.g. vacation mode).
+      default: []
+      selector:
+        entity:
+          multiple: true
+
+mode: single
+max_exceeded: silent
+
+trigger:
+  - platform: time
+    at: !input notify_time
+
+variables:
+  indoor_sensor: !input indoor_avg_sensor
+  out_sensor: !input outdoor_sensor
+  dew_sensor: !input dewpoint_sensor
+  tomorrow_sensor: !input tomorrow_high_sensor
+  room_sensors: !input room_temp_sensors
+  blockers: !input block_if_on
+  look_h: !input lookahead_hours
+  in_thresh: !input indoor_threshold
+  delta_req: !input min_delta
+  dew_max: !input dewpoint_max
+  hot_thresh: !input hotday_threshold
+  notify_svc: !input notify_service
+
+condition:
+  - condition: template
+    value_template: >
+      {{ blockers | map('states') | reject('in', ['on','home','true','True']) | list | length
+         == (blockers | length) }}
+  - condition: numeric_state
+    entity_id: !input indoor_avg_sensor
+    above: !input indoor_threshold
+  - condition: numeric_state
+    entity_id: !input dewpoint_sensor
+    below: !input dewpoint_max
+
+action:
+  - alias: Get hourly forecast
+    service: weather.get_forecasts
+    target:
+      entity_id: !input weather_entity
+    data:
+      type: hourly
+    response_variable: fc
+  - variables:
+      indoor: "{{ states(indoor_sensor) | float(0) }}"
+      outdoor_now: "{{ states(out_sensor) | float(99) }}"
+      dewpoint: "{{ states(dew_sensor) | float(99) }}"
+      tomorrow_high: "{{ states(tomorrow_sensor) | float(0) }}"
+      fc_min: >
+        {% set list = (fc.values() | list) %}
+        {% set hours = (list[0].forecast if list | length > 0 else []) %}
+        {% set horizon = now() + timedelta(hours=look_h | int) %}
+        {% set ns = namespace(temps=[]) %}
+        {% for h in hours %}
+          {% set t = as_datetime(h.datetime) %}
+          {% if t is not none and t <= horizon %}
+            {% set ns.temps = ns.temps + [h.temperature | float(99)] %}
+          {% endif %}
+        {% endfor %}
+        {{ (ns.temps | min) if ns.temps | length > 0 else outdoor_now }}
+      warm_rooms: >
+        {% set ns = namespace(items=[]) %}
+        {% for e in room_sensors %}
+          {% set t = states(e) | float(-99) %}
+          {% if t > -99 %}
+            {% set nm = state_attr(e,'friendly_name') or e %}
+            {% set ns.items = ns.items + [{'name': nm, 'temp': t}] %}
+          {% endif %}
+        {% endfor %}
+        {{ (ns.items | sort(attribute='temp', reverse=true))[:3]
+           | map(attribute='name') | join(', ') }}
+  - alias: Only continue if ventilation is worthwhile
+    condition: template
+    value_template: "{{ (indoor - (fc_min | float(99))) >= (delta_req | float(2)) }}"
+  - alias: Send notification
+    service: "{{ notify_svc }}"
+    data:
+      title: "🌙 Free cooling available"
+      message: >
+        Indoor {{ indoor | round(1) }} °C, outdoor now {{ outdoor_now | round(1) }} °C,
+        low over next {{ look_h }} h ~{{ fc_min | round(1) }} °C (dew point {{ dewpoint | round(1) }} °C – ok).
+        {% if warm_rooms %}Warmest rooms: {{ warm_rooms }}. {% endif %}
+        {% if tomorrow_high >= (hot_thresh | float(30)) %}
+        ☀️ Tomorrow up to {{ tomorrow_high | round(0) }} °C – ventilate tonight and pre-cool the slab!
+        {% else %}
+        Opening the windows is worth it.
+        {% endif %}
