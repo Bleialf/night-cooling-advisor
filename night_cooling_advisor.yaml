@@ -2,32 +2,86 @@ blueprint:
   name: Night Cooling Advisor (Free Cooling)
   source_url: https://github.com/bleialf/night-cooling-advisor/blob/main/night_cooling_advisor.yaml
   description: >
-    Sends an evening notification when free night ventilation is worthwhile.
-    Uses the hourly forecast (will it cool down over the next hours?), the indoor
-    average, the outdoor dew point (don't ventilate humidity in) and tomorrow's
-    high (hot day -> pre-cool the slab). Names the warmest rooms.
-    Notification only, no actuators.
+    Evening advisor for free night ventilation. Once a day at a fixed time it
+    checks whether opening the windows tonight is worthwhile and, if so, sends a
+    notification. Decision logic: indoor must be too warm, the OUTDOOR dew point
+    must be low enough (so you don't ventilate humid air in), and the LOWEST
+    forecast outdoor temperature within a look-ahead window must be clearly below
+    indoor. Because it uses the forecast minimum (not the current temperature),
+    it still advises ventilation when it's a little too warm right now but will
+    cool down soon. It can also name the warmest rooms and add a "pre-cool the
+    slab" hint before a hot day. Notification only - it never moves covers,
+    windows, or the heat pump.
   domain: automation
   input:
     notify_time:
       name: Evening notification time
+      description: >
+        Time of day the advisor runs and (if all conditions are met) sends the
+        notification. It evaluates ONCE per day at this time. Choose the moment
+        you'd normally decide whether to open windows for the night (e.g. shortly
+        before bed).
       default: "20:00:00"
       selector:
         time: {}
     notify_service:
       name: Notify service
-      description: e.g. notify.ha_push_bewohner
+      description: >
+        The notify service that delivers the message. Accepts a single service
+        (e.g. notify.mobile_app_yourphone) or a notify GROUP (e.g.
+        notify.ha_push_bewohner). Entered as free text on purpose, because notify
+        groups frequently do not appear in entity/device pickers.
       selector:
         text: {}
+    notify_title:
+      name: Notification title
+      description: >
+        Title of the push notification. Supports Jinja templates and may use any
+        of the exposed variables listed under "Notification message". Edit freely.
+      default: "🌙 Free cooling available"
+      selector:
+        text: {}
+    notify_message:
+      name: Notification message
+      description: >
+        Body of the notification. Fully editable and rendered as a Jinja template.
+        Available variables you can reference:
+          - indoor         : indoor average temperature (°C)
+          - outdoor_now    : current outdoor temperature (°C)
+          - fc_min         : lowest forecast outdoor temp within the look-ahead window (°C)
+          - dewpoint       : current outdoor dew point (°C)
+          - tomorrow_high  : forecast high for tomorrow (°C)
+          - look_h         : look-ahead window in hours
+          - warm_rooms     : comma-separated names of the 3 warmest rooms (may be empty)
+          - hot_thresh     : the hot-day threshold (°C)
+          - delta_req      : the minimum benefit (K)
+        The default below also contains the optional "pre-cool the slab" hint,
+        shown only when tomorrow_high reaches the hot-day threshold.
+      default: >
+        Indoor {{ indoor | round(1) }} °C, outdoor now {{ outdoor_now | round(1) }} °C,
+        low over next {{ look_h }} h ~{{ fc_min | round(1) }} °C (dew point {{ dewpoint | round(1) }} °C – ok).
+        {% if warm_rooms %}Warmest rooms: {{ warm_rooms }}. {% endif %}
+        {% if tomorrow_high >= (hot_thresh | float(30)) %}☀️ Tomorrow up to {{ tomorrow_high | round(0) }} °C – ventilate tonight and pre-cool the slab!{% else %}Opening the windows is worth it.{% endif %}
+      selector:
+        text:
+          multiline: true
     indoor_avg_sensor:
       name: Indoor average sensor
+      description: >
+        Sensor representing the average indoor temperature. The "too warm inside"
+        decision (see Indoor threshold) and the message's "indoor" value come from
+        this. Typically a weighted whole-home average sensor.
       selector:
         entity:
           domain: sensor
           device_class: temperature
     room_temp_sensors:
-      name: Room temperature sensors (for "warmest rooms")
-      description: List of room sensors; names are taken automatically from friendly_name.
+      name: Room temperature sensors (warmest-rooms list)
+      description: >
+        OPTIONAL list of individual room temperature sensors. Used only to name
+        the three warmest rooms in the message; their friendly names are used
+        automatically. Has no effect on whether the notification is sent. Leave
+        empty to omit the room list entirely.
       default: []
       selector:
         entity:
@@ -36,55 +90,99 @@ blueprint:
           multiple: true
     outdoor_sensor:
       name: Outdoor temperature (current)
+      description: >
+        Current outdoor temperature. Shown in the message as "outdoor now" and
+        used as a safe fallback for the look-ahead minimum if the hourly forecast
+        is temporarily unavailable.
       selector:
         entity:
           domain: sensor
           device_class: temperature
     weather_entity:
       name: Weather entity (hourly forecast)
+      description: >
+        Weather entity that provides an HOURLY forecast via the
+        weather.get_forecasts service. This is the source of the look-ahead
+        minimum. Requires Home Assistant 2024.x or newer.
       selector:
         entity:
           domain: weather
     dewpoint_sensor:
       name: Outdoor dew point
+      description: >
+        Current OUTDOOR dew point. This is the humidity guard: if the outdoor dew
+        point is at or above "Max outdoor dew point", no notification is sent, so
+        you never ventilate muggy air into the house. (Surface/floor cooling and
+        comfort both suffer from high indoor humidity.)
       selector:
         entity:
           domain: sensor
           device_class: temperature
     tomorrow_high_sensor:
       name: Tomorrow's high temperature
+      description: >
+        Forecast high for tomorrow. Used ONLY to decide whether the message adds
+        the urgent "pre-cool the slab" wording (see Hot-day threshold). Does not
+        affect whether the notification is sent.
       selector:
         entity:
           domain: sensor
           device_class: temperature
     lookahead_hours:
       name: Look-ahead window (hours)
+      description: >
+        How many hours ahead to scan the hourly forecast for the LOWEST outdoor
+        temperature. The decision compares indoor against this minimum rather than
+        the current outdoor temperature, so the advisor still fires when it's
+        slightly too warm now but cools down within the window (e.g. an hour after
+        bedtime and all night).
       default: 4
       selector:
         number: { min: 1, max: 12, step: 1, unit_of_measurement: h, mode: slider }
     indoor_threshold:
-      name: Indoor threshold (only notify if indoor warmer than)
+      name: Indoor threshold
+      description: >
+        Minimum indoor average temperature required to send a notification. If
+        indoor is at or below this, it's not warm enough inside to bother with
+        ventilation. This is a gate, not message text.
       default: 23
       selector:
         number: { min: 18, max: 28, step: 0.5, unit_of_measurement: "°C", mode: slider }
     min_delta:
-      name: Minimum benefit (indoor minus forecast outdoor minimum)
+      name: Minimum benefit (indoor minus forecast minimum)
+      description: >
+        Required temperature advantage in Kelvin: (indoor − forecast outdoor
+        minimum) must be at least this value. Prevents pointless "open the windows
+        for 0.5 K" advice. Higher = only notify when there's a real cooling
+        opportunity.
       default: 2
       selector:
         number: { min: 0.5, max: 8, step: 0.5, unit_of_measurement: K, mode: slider }
     dewpoint_max:
-      name: Max outdoor dew point (avoid humidity)
+      name: Max outdoor dew point
+      description: >
+        Upper limit for the outdoor dew point. At or above this value the air is
+        too humid and no notification is sent (see Outdoor dew point). Lower =
+        stricter humidity protection.
       default: 16
       selector:
         number: { min: 8, max: 20, step: 0.5, unit_of_measurement: "°C", mode: slider }
     hotday_threshold:
       name: Hot-day threshold (tomorrow's high)
+      description: >
+        If tomorrow's forecast high is at or above this, the default message
+        switches to the urgent "pre-cool the slab tonight" wording. This only
+        changes the message TEXT, never whether the notification is sent. Lower =
+        the urgent hint appears more often.
       default: 30
       selector:
         number: { min: 24, max: 38, step: 1, unit_of_measurement: "°C", mode: slider }
     block_if_on:
       name: (Optional) Block entities
-      description: If any of these is 'on'/'home', no notification (e.g. vacation mode).
+      description: >
+        OPTIONAL list of entities that SUPPRESS the notification when any of them
+        is on / home / true. Use it for a vacation_mode boolean, a "windows
+        already open" sensor, a guest mode, etc. Leave empty to never suppress.
       default: []
       selector:
         entity:
@@ -165,13 +263,5 @@ action:
   - alias: Send notification
     service: "{{ notify_svc }}"
     data:
-      title: "🌙 Free cooling available"
-      message: >
-        Indoor {{ indoor | round(1) }} °C, outdoor now {{ outdoor_now | round(1) }} °C,
-        low over next {{ look_h }} h ~{{ fc_min | round(1) }} °C (dew point {{ dewpoint | round(1) }} °C – ok).
-        {% if warm_rooms %}Warmest rooms: {{ warm_rooms }}. {% endif %}
-        {% if tomorrow_high >= (hot_thresh | float(30)) %}
-        ☀️ Tomorrow up to {{ tomorrow_high | round(0) }} °C – ventilate tonight and pre-cool the slab!
-        {% else %}
-        Opening the windows is worth it.
-        {% endif %}
+      title: !input notify_title
+      message: !input notify_message
