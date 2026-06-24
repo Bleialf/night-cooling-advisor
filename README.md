@@ -34,3 +34,7 @@ You can also open the source file directly:
 ## Compatibility
 
 Requires Home Assistant 2024.x or newer because it uses `weather.get_forecasts`.
+
+## Version
+
+Current release: 1.0.0
